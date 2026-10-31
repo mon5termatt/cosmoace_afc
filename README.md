@@ -60,6 +60,21 @@ filament sync and the AFC panels in Mainsail, Fluidd and grumpyscreen.
 Update: `git -C /etc/klipper/plugins/AFC_ACE pull`, then restart. Remove:
 delete the include line and the folder, then restart.
 
+### ACE USB harden (recommended)
+
+The ACE Pro drops USB if the host goes quiet (~3s) and can wedge the hub with
+`-71` when something dual-opens the tty or hubs autosuspend. AFC's own
+heartbeat covers the watchdog; this package pins hub power, applies usbcore
+quirks, and rate-limits a Genesys-hub reauth if the ACE disappears.
+
+```sh
+sh /etc/klipper/plugins/AFC_ACE/tools/ace-usb-harden/install.sh
+```
+
+Uninstall: `sh .../tools/ace-usb-harden/uninstall.sh`. Optional Cosmos image
+recipe lives on fork branch `ace-usb-harden` of cosmos — not required for
+day-to-day use.
+
 ## Settings to set for your setup
 
 Never edit the files in the plugin folder: updates overwrite them. Put
@@ -102,6 +117,7 @@ The toolhead lengths (`tool_stn` 51.5, `afc_bowden_length` 8,
 | `[AFC_ACE ACE_1]` `serial` | `auto` | Only if `auto` picks the wrong USB device: set a `/dev/serial/by-path/...` name (not `ttyACM*`, it changes between boots). |
 | Second ACE | off | Copy the commented `ACE_2` and `lane5`–`lane8` block from [`config/afc-ace.cfg`](config/afc-ace.cfg) into `printer.cfg` and uncomment it. Needs a hub or merger with 8 inputs. |
 | `[AFC_ACE ACE_1]` `protocol` | `ace1` | `ace2` for an ACE 2 Pro (cable and tube length under [What you need](#what-you-need)). |
+| `[AFC_ACE ACE_1]` `usb_reconnect_grace_s` | `15` | Seconds an idle USB drop may last before pause/error. Load/unload fail immediately. `0` = pause on first offline poll. |
 
 All other settings, with their defaults, are listed in [All settings](#all-settings).
 
@@ -168,6 +184,7 @@ measuring the runout path's bowden length.
 | `optional` | `False` | a missing unit is reported instead of failing startup |
 | `monitor_only` | `False` | status, RFID and dryer only, no filament motion |
 | `bypass_runout_distance` | `770` | runout path, bypass: mm printed after the sensor clears before pausing |
+| `usb_reconnect_grace_s` | `15` | idle USB drop grace before pause; motion commands skip grace |
 
 Developer checks: `python tools/check_configs.py <cosmos checkout>`,
 `python tools/test_driver.py`, `python tools/test_ace2.py`.
