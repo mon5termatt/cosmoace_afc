@@ -12,11 +12,12 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 echo "Installing ace-usb-harden (udev, usbcore quirks, power + recover daemons)..."
 sh "$SCRIPT_DIR/deploy-live.sh" "$SCRIPT_DIR"
 
-if [ -x /tmp/ace-usb-harden/verify-live.sh ] || [ -f "$SCRIPT_DIR/verify-live.sh" ]; then
+echo "Patching U-Boot bootargs for ACE USB quirks (survives reboot)..."
+sh "$SCRIPT_DIR/patch-bootargs.sh"
+
+if [ -f "$SCRIPT_DIR/verify-live.sh" ]; then
     echo "Verifying..."
     sh "$SCRIPT_DIR/verify-live.sh" || true
 fi
 
-echo "Done. Hubs should show power/control=on; ace-usb-power / ace-usb-recover should be running."
-echo "Bootargs quirks fully apply after a Cosmos image that includes the u-boot env change,"
-echo "or reboot after fw_setenv — live sysfs quirks are already applied best-effort."
+echo "Done. Reboot the printer after power-cycling a wedged ACE so bootargs apply."

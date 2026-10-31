@@ -71,9 +71,14 @@ quirks, and rate-limits a Genesys-hub reauth if the ACE disappears.
 sh /etc/klipper/plugins/AFC_ACE/tools/ace-usb-harden/install.sh
 ```
 
-Uninstall: `sh .../tools/ace-usb-harden/uninstall.sh`. Optional Cosmos image
-recipe lives on fork branch `ace-usb-harden` of cosmos — not required for
-day-to-day use.
+That also runs `patch-bootargs.sh` (`fw_setenv`) so the next printer reboot
+loads stronger `usbcore.quirks` for the ACE + hubs. A hard `-71` wedge still
+needs an ACE power cycle once; the OS patch is what reduces getting stuck
+there under feed load.
+
+Uninstall: `sh .../tools/ace-usb-harden/uninstall.sh`. Cosmos fork branch
+`ace-usb-harden` bakes the same quirks into the kernel quirk table + U-Boot
+env when you rebuild an image.
 
 ## Settings to set for your setup
 
