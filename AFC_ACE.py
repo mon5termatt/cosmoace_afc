@@ -387,7 +387,15 @@ class AceTransport(threading.Thread):
             self.connected = False
             return False
         try:
-            self._ser = serial.Serial(port, self.baud, timeout=0.1, write_timeout=2.0)
+            # rtscts matches the Gen1 CDC path used by the flash/stress tools;
+            # without it, status reads under Klipper intermittently time out
+            # waiting for a frame header and the lane UI flaps.
+            try:
+                self._ser = serial.Serial(
+                    port, self.baud, timeout=0.1, write_timeout=2.0, rtscts=True)
+            except TypeError:
+                self._ser = serial.Serial(
+                    port, self.baud, timeout=0.1, write_timeout=2.0)
             self.connected = True
             self.last_error = None
             self.generation += 1
@@ -1275,6 +1283,10 @@ class afcACE(afcUnit):
         self.transport: Optional[AceTransport] = None
         self._slot_map: Dict[str, int] = {}
         self._last_prep: Dict[int, Optional[bool]] = {}
+        # Consecutive empty status reads per slot before treating as removed
+        self._empty_streak: Dict[int, int] = {}
+        # Consecutive polls with no usable status before clearing loaded_to_hub
+        self._unloadable_streak = 0
         # Last RFID (type, color) seen per slot; see _sync_lane
         self._last_rfid: Dict[int, Tuple[Any, str]] = {}
         self._operation_active = False
@@ -2034,14 +2046,27 @@ class afcACE(afcUnit):
                 lane._load_state = bool(lane.tool_loaded)
 
         status, when = self.transport.cached_status()
-        if status is None or (time.monotonic() - when) > 10.0:
-            # No word from this ACE (unplugged, powered down, or its watchdog
-            # mid-re-enumeration). Its lanes keep whatever they were restored
-            # with from AFC.var, so clear the loadable flag: a stale one has
-            # TOOL_LOAD and every UI offering a load this unit cannot perform.
-            # prep_state is left alone so the last known spool still shows.
-            self._mark_lanes_unloadable()
-            return eventtime + 2.0
+        now = time.monotonic()
+        if status is None or (now - when) > 10.0:
+            # Stock builds refresh via the idle heartbeat thread. heartbeat_s 0
+            # skips that, so this timer must fetch. Use a non-strict read and
+            # keep syncing from cache through brief USB/RPC glitches — marking
+            # unloadable clears loaded_to_hub while prep_state stays true
+            # (UI Ready ↔ Prep). Only drop loadable after several polls with
+            # nothing at all to sync from.
+            status = self._get_status()
+            if status is None:
+                status, when = (
+                    self.transport.cached_status() if self.transport
+                    else (None, 0.0))
+            if status is None:
+                self._unloadable_streak += 1
+                if self._unloadable_streak >= 3:
+                    self._mark_lanes_unloadable("no status")
+                return eventtime + 2.0
+            if self._operation_active:
+                return eventtime + 2.0
+        self._unloadable_streak = 0
         if self._assist_needs_arming(status):
             self._arm_assist()
             # The RPC paused this timer: a load or unload may have started,
@@ -2085,11 +2110,17 @@ class afcACE(afcUnit):
                                f"continuing:\n{traceback.format_exc()}")
         return eventtime + 1.5
 
-    def _mark_lanes_unloadable(self) -> None:
+    def _mark_lanes_unloadable(self, reason: str = "") -> None:
         """Withdraw the "staged and loadable" flag from this unit's lanes."""
+        cleared = False
         for lane_name, lane in self.lanes.items():
             if lane_name in self._slot_map and lane.loaded_to_hub:
                 lane.loaded_to_hub = False
+                cleared = True
+        if cleared:
+            why = f" ({reason})" if reason else ""
+            self.logger.info(
+                f"AFC_ACE {self.name}: cleared loaded_to_hub{why}")
 
     def _sync_lane(self, lane_name: str, lane: AFCLane, slot: int,
                    status: Dict[str, Any], eventtime: float) -> None:
@@ -2097,7 +2128,19 @@ class afcACE(afcUnit):
             # No data for this slot in the frame: unknown, not empty. Read
             # as empty, a loaded lane would drop feed assist mid-print.
             return
-        present = self._slot_present(slot, status)
+        raw_present = self._slot_present(slot, status)
+        if raw_present:
+            self._empty_streak[slot] = 0
+            present = True
+        else:
+            # One empty frame must not fire set_unloaded / clear hub — ACE
+            # status can glitch empty for a poll while the spool is still in.
+            streak = self._empty_streak.get(slot, 0) + 1
+            self._empty_streak[slot] = streak
+            if streak < 3 and self._last_prep.get(slot):
+                present = True
+            else:
+                present = False
         lane.prep_state = present
         # Virtual-hub idiom (same as OpenAMS): loaded_to_hub is the latched
         # "staged and loadable" flag TOOL_LOAD gates on, and a present spool is
@@ -2945,8 +2988,19 @@ class afcACE(afcUnit):
         if status is None:
             err = self.transport.last_error if self.transport else "transport not started"
             self.logger.info(f"{self.name}: not connected ({err})")
-        else:
-            self.logger.info(f"{self.name}: {json.dumps(status, indent=1)}")
+            return
+        # Refresh lane prep/loadable flags from this snapshot (same as the
+        # status poll) so a console STATUS also clears a stuck "Prep" UI.
+        eventtime = self.reactor.monotonic()
+        for lane_name, lane in self.lanes.items():
+            slot = self._slot_map.get(lane_name)
+            if slot is None:
+                continue
+            try:
+                self._sync_lane(lane_name, lane, slot, status, eventtime)
+            except Exception:
+                pass
+        self.logger.info(f"{self.name}: {json.dumps(status, indent=1)}")
 
     def cmd_AFC_ACE_STOP(self, gcmd: GCodeCommand) -> None:
         lane_name = gcmd.get("LANE")
