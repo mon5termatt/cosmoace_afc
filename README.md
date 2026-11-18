@@ -164,6 +164,7 @@ measuring the runout path's bowden length.
 | `serial` | `auto` | USB device (ACE Pro: the first unit's; ACE 2 Pro: the bus) |
 | `unit_index` | `0`, `1`, ... | per unit: which ACE, in USB order (ACE 2: by hardware ID) |
 | `feed_speed` / `retract_speed` | `50` / `75` | mm/s |
+| `heartbeat_s` | `0.8` | idle `get_status` interval for stock ACE USB/motion watchdogs; `0` = off (OpenCubic no-watchdog CFW) |
 | `hub_clear_mm` | `110` runout / `65` toolhead | how far behind the sensor an unloaded lane parks |
 | `sensor_approach_mm` / `sensor_approach_speed` | `30` / `15` | toolhead path: slow final approach to the sensor |
 | `sync_load_mm` | `8` toolhead | how much the ACE pushes together with the extruder when threading the gears |

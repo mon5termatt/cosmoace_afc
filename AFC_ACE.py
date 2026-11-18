@@ -96,10 +96,14 @@ DRYER_MAX_C = 65
 # before the motor spins up; status read inside this window proves nothing.
 SPIN_UP_S = 0.6
 
-# The ACE drops its USB link (~0.5s re-enumeration) if it sees no complete
+# Stock ACE firmware drops USB (~0.5s re-enumeration) if it sees no complete
 # frame for ~3.5s, and pauses motion mid-feed if status isn't polled roughly
-# every second. One heartbeat interval serves both.
+# every second. One idle heartbeat interval serves both. OpenCubic's
+# no-watchdog CFW (issue #8) removes those firmware behaviours — set
+# [AFC_ACE] heartbeat_s: 0 to skip the idle keepalive.
 HEARTBEAT_S = 0.8
+# Queue wake interval when idle keepalive is off (still need to notice stop).
+_IDLE_POLL_S = 1.0
 # How long a lost reply waits for the ACE to come back on USB before its
 # motion state counts as unknown: a re-enumeration is ~0.5s, each reconnect
 # attempt ~0.7s.
@@ -164,16 +168,19 @@ class AceTransport(threading.Thread):
     """Owns the ACE serial port in a background thread.
 
     RPCs are queued from the klippy reactor thread and answered via a
-    threading.Event the caller polls with reactor.pause. When idle, the
-    thread sends get_status every HEARTBEAT_S: this feeds the ACE's comms
-    watchdog, keeps motors alive during long feeds, and refreshes the status
-    cache the unit reads for lane sync and motion waits.
+    threading.Event the caller polls with reactor.pause. When idle and
+    heartbeat_s > 0, the thread sends get_status on that interval: this
+    feeds stock ACE comms watchdog, keeps motors alive during long feeds,
+    and refreshes the status cache. heartbeat_s 0 skips that idle keepalive
+    (OpenCubic no-watchdog CFW).
     """
 
-    def __init__(self, serial_port: str, unit_index: int) -> None:
+    def __init__(self, serial_port: str, unit_index: int,
+                 heartbeat_s: float = HEARTBEAT_S) -> None:
         super().__init__(name="AFC_ACE_serial", daemon=True)
         self.configured_port = serial_port
         self.unit_index = unit_index
+        self.heartbeat_s = float(heartbeat_s)
         self.baud = 115200
         self._ser = None
         self._queue: "queue.Queue[tuple]" = queue.Queue()
@@ -257,9 +264,12 @@ class AceTransport(threading.Thread):
 
     def run(self) -> None:
         while not self._shutdown.is_set():
+            wait = self.heartbeat_s if self.heartbeat_s > 0 else _IDLE_POLL_S
             try:
-                method, params, result, done, cancelled = self._queue.get(timeout=HEARTBEAT_S)
+                method, params, result, done, cancelled = self._queue.get(timeout=wait)
             except queue.Empty:
+                if self.heartbeat_s <= 0:
+                    continue
                 # Nothing may escape here: a dead thread stops the heartbeat
                 # and every later RPC just times out.
                 try:
@@ -347,13 +357,16 @@ class AceTransport(threading.Thread):
         return scan_ace_ports().get(self._pinned_path)
 
     def _discover_unit_path(self) -> Optional[str]:
-        """Accumulate ACE USB paths over a full watchdog cycle: an idle ACE
-        drops USB every ~3.5s and is invisible ~0.5s, so a single snapshot
-        can miss a unit and mis-index the survivors."""
+        """Find this unit's USB path. Stock firmware drops an idle ACE every
+        ~3.5s, so accumulate over a full watchdog cycle. No-watchdog CFW
+        (heartbeat_s 0) keeps the link up — one snapshot is enough."""
         seen: set = set()
-        deadline = time.monotonic() + 6.0
-        while time.monotonic() < deadline and not self._shutdown.is_set():
+        window = 0.0 if self.heartbeat_s <= 0 else 6.0
+        deadline = time.monotonic() + window
+        while True:
             seen.update(scan_ace_ports().keys())
+            if time.monotonic() >= deadline or self._shutdown.is_set():
+                break
             time.sleep(0.5)
         ordered = sorted(seen, key=_usb_path_key)
         if self.unit_index < len(ordered):
@@ -1065,8 +1078,9 @@ class Ace2Transport(AceTransport):
     """One ACE 2 unit: AceTransport's API (submit, cached_status, notes,
     connected, generation) over a shared Ace2Bus instead of its own thread."""
 
-    def __init__(self, serial_port: str, unit_index: int) -> None:
-        super().__init__(serial_port, unit_index)
+    def __init__(self, serial_port: str, unit_index: int,
+                 heartbeat_s: float = HEARTBEAT_S) -> None:
+        super().__init__(serial_port, unit_index, heartbeat_s=heartbeat_s)
         self.device_id: Optional[int] = None
         self.uid: Optional[Tuple[int, int, int]] = None
         self._misses = 0
@@ -1189,6 +1203,9 @@ class afcACE(afcUnit):
         self.optional = config.getboolean("optional", False)
         self.feed_speed = config.getint("feed_speed", 50, minval=10)
         self.retract_speed = config.getint("retract_speed", 75, minval=10)
+        # Idle get_status interval for stock ACE USB/motion watchdogs.
+        # 0 = off (OpenCubic no-watchdog CFW). ACE 2 bus keeps its own cadence.
+        self.heartbeat_s = config.getfloat("heartbeat_s", HEARTBEAT_S, minval=0.0)
         # unwind_filament mode: 0 = normal, 1 = "enhanced" (drives the spool
         # take-up harder; believed to pile up slack on some units)
         self.retract_mode = config.getint("retract_mode", 0)
@@ -1388,7 +1405,8 @@ class afcACE(afcUnit):
                 continue
             self._slot_map[lane.name] = slot
         transport = Ace2Transport if self.protocol == "ace2" else AceTransport
-        self.transport = transport(self.serial_port, self.ace_unit_index)
+        self.transport = transport(
+            self.serial_port, self.ace_unit_index, heartbeat_s=self.heartbeat_s)
         self.transport.start()
         self.printer.register_event_handler("klippy:disconnect", self._handle_disconnect)
         self.printer.register_event_handler("klippy:shutdown", self._handle_shutdown)
@@ -1612,7 +1630,9 @@ class afcACE(afcUnit):
                 return True, ""
             # Commanded length exhausted without the sensor: extend the feed
             if time.monotonic() >= settled:
-                status = self._get_status(max_age=HEARTBEAT_S * 2, newer_than=settled)
+                hb = self.transport.heartbeat_s if self.transport else HEARTBEAT_S
+                max_age = (hb * 2) if hb > 0 else 0.5
+                status = self._get_status(max_age=max_age, newer_than=settled)
                 if status is not None and not self._motion_active(slot, status):
                     if not extend:
                         return False, NOT_REACHED
