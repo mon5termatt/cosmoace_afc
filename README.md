@@ -61,6 +61,33 @@ filament sync and the AFC panels in Mainsail, Fluidd and grumpyscreen.
 Update: `git -C /etc/klipper/plugins/AFC_ACE pull`, then restart. Remove:
 delete the include line and the folder, then restart.
 
+## Flash ACE Pro firmware (CC1 / CC2)
+
+Gen 1 ACE Pro images (OpenCubic CFW, stock, or a test build such as the
+no-watchdog zip) can be flashed from the printer over USB. **Stop Klipper
+first** so nothing holds the ACE serial port. A later `AFC_ACE_FW_RELEASE`
+path may keep Klipper up; that is not implemented yet.
+
+1. Copy the `.bin` onto the printer (scp, or Moonraker upload then move it).
+2. SSH in and stop Klipper: `/etc/init.d/klipper stop`
+3. List / probe, then flash:
+
+```sh
+python /etc/klipper/plugins/AFC_ACE/tools/ace1_flash.py list
+python /etc/klipper/plugins/AFC_ACE/tools/ace1_flash.py version
+python /etc/klipper/plugins/AFC_ACE/tools/ace1_flash.py flash --bin /path/to/ACE_V1.3.863_….bin
+```
+
+Use `--dry` to print size/md5/crc only, `--yes` to skip the confirm prompt,
+`--unit 1` for a chained second ACE, `--force` if the Klipper-running check
+is wrong. After a successful flash: `/etc/init.d/klipper start`.
+
+If you flashed OpenCubic's no-watchdog CFW, set `[AFC_ACE] heartbeat_s: 0`
+in `printer.cfg` (see [All settings](#all-settings)).
+
+Do not use foreign Snapmaker-style `S60klipper` recovery scripts to bring
+Klipper back — those can re-flash stock ACE firmware on some platforms.
+
 ## Settings to set for your setup
 
 Everything goes in **one section**, `[AFC_ACE]`, in `printer.cfg` below the
