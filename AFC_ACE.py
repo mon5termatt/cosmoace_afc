@@ -1314,37 +1314,42 @@ class afcACE(afcUnit):
         # failed load backs the extruder out before the ACE retracts
         self._gears_engaged = False
 
-        self.gcode.register_mux_command(
-            'AFC_ACE_DRYER_START', "UNIT", self.name, self.cmd_AFC_ACE_DRYER_START,
-            desc="Start the ACE dryer: AFC_ACE_DRYER_START UNIT=%s [TEMP=] [DURATION=] [FAN_SPEED=]" % self.name)
-        self.gcode.register_mux_command(
-            'AFC_ACE_DRYER_STOP', "UNIT", self.name, self.cmd_AFC_ACE_DRYER_STOP,
-            desc="Stop the ACE dryer")
-        self.gcode.register_mux_command(
-            'AFC_ACE_STATUS', "UNIT", self.name, self.cmd_AFC_ACE_STATUS,
-            desc="Report raw ACE status")
-        self.gcode.register_mux_command(
-            'AFC_ACE_STOP', "UNIT", self.name, self.cmd_AFC_ACE_STOP,
-            desc="Stop all ACE motion for a lane: AFC_ACE_STOP UNIT=%s LANE=" % self.name)
-        self.gcode.register_mux_command(
-            'AFC_ACE_RESET', "UNIT", self.name, self.cmd_AFC_ACE_RESET,
-            desc="Retract a lane clear of the sensors and park it behind the "
-                 "splitter: AFC_ACE_RESET UNIT=%s LANE=" % self.name)
-        self.gcode.register_mux_command(
-            'AFC_ACE_CALIBRATE_HUB', "UNIT", self.name,
-            self.cmd_AFC_ACE_CALIBRATE_HUB,
-            desc="Feed to hub then retract CLEAR mm (no dist_hub write): "
-                 "AFC_ACE_CALIBRATE_HUB UNIT=%s LANE=" % self.name)
-        self.gcode.register_mux_command(
-            'AFC_ACE_CALIBRATE_BOWDEN', "UNIT", self.name,
-            self.cmd_AFC_ACE_CALIBRATE_BOWDEN,
-            desc="Feed hub->toolhead sensor; report afc_bowden_length mm: "
-                 "AFC_ACE_CALIBRATE_BOWDEN UNIT=%s LANE=" % self.name)
-        self.gcode.register_mux_command(
-            'AFC_ACE_CALIBRATE_PATH', "UNIT", self.name,
-            self.cmd_AFC_ACE_CALIBRATE_PATH,
-            desc="Hub (PARK=0) then bowden then park: "
-                 "AFC_ACE_CALIBRATE_PATH UNIT=%s LANE=" % self.name)
+        # UNIT= is required with 2+ ACEs. With one unit, also register the
+        # Klipper mux default (None) so AFC_ACE_STATUS / CALIBRATE_* work
+        # without UNIT=. AceSetup sets _SETUP_UNIT_COUNT before load_object
+        # (the [AFC_ACE] object is not lookup-able yet during unit __init__).
+        sole_unit = _SETUP_UNIT_COUNT == 1
+        unit_hint = self.name if not sole_unit else "[UNIT=%s]" % self.name
+        self._register_unit_cmd(
+            'AFC_ACE_DRYER_START', self.cmd_AFC_ACE_DRYER_START, sole_unit,
+            "Start the ACE dryer: AFC_ACE_DRYER_START %s [TEMP=] [DURATION=] "
+            "[FAN_SPEED=]" % unit_hint)
+        self._register_unit_cmd(
+            'AFC_ACE_DRYER_STOP', self.cmd_AFC_ACE_DRYER_STOP, sole_unit,
+            "Stop the ACE dryer")
+        self._register_unit_cmd(
+            'AFC_ACE_STATUS', self.cmd_AFC_ACE_STATUS, sole_unit,
+            "Report raw ACE status")
+        self._register_unit_cmd(
+            'AFC_ACE_STOP', self.cmd_AFC_ACE_STOP, sole_unit,
+            "Stop all ACE motion for a lane: AFC_ACE_STOP %s LANE=" % unit_hint)
+        self._register_unit_cmd(
+            'AFC_ACE_RESET', self.cmd_AFC_ACE_RESET, sole_unit,
+            "Retract a lane clear of the sensors and park it behind the "
+            "splitter: AFC_ACE_RESET %s LANE=" % unit_hint)
+        self._register_unit_cmd(
+            'AFC_ACE_CALIBRATE_HUB', self.cmd_AFC_ACE_CALIBRATE_HUB, sole_unit,
+            "Feed to hub then retract CLEAR mm (no dist_hub write): "
+            "AFC_ACE_CALIBRATE_HUB %s LANE=" % unit_hint)
+        self._register_unit_cmd(
+            'AFC_ACE_CALIBRATE_BOWDEN', self.cmd_AFC_ACE_CALIBRATE_BOWDEN,
+            sole_unit,
+            "Feed hub->toolhead sensor; report afc_bowden_length mm: "
+            "AFC_ACE_CALIBRATE_BOWDEN %s LANE=" % unit_hint)
+        self._register_unit_cmd(
+            'AFC_ACE_CALIBRATE_PATH', self.cmd_AFC_ACE_CALIBRATE_PATH, sole_unit,
+            "Hub (PARK=0) then bowden then park: "
+            "AFC_ACE_CALIBRATE_PATH %s LANE=" % unit_hint)
         self._last_fed_mm = 0.0
         # One command each for all units: the first unit registers them
         try:
@@ -1361,6 +1366,13 @@ class afcACE(afcUnit):
                      "AFC_ACE_PANEL ACTION=INSTALL|REMOVE")
         except error:
             pass
+
+    def _register_unit_cmd(self, cmd: str, func, sole_unit: bool,
+                           desc: str) -> None:
+        """Register a UNIT= mux command; with one ACE also accept no UNIT=."""
+        self.gcode.register_mux_command(cmd, "UNIT", self.name, func, desc=desc)
+        if sole_unit:
+            self.gcode.register_mux_command(cmd, "UNIT", None, func, desc=desc)
 
     def _create_lanes(self, config: ConfigWrapper) -> None:
         """This unit's four lanes, numbered by unit_index: lane1-4 (T0-T3) on
@@ -3480,6 +3492,11 @@ def count_ace_units(protocol: str, serial_port: str) -> int:
         time.sleep(0.25)
 
 
+# Set by AceSetup before it load_object()s each unit (units cannot look up
+# the unfinished [AFC_ACE] object yet). Used to register UNIT-less mux defaults.
+_SETUP_UNIT_COUNT = 1
+
+
 class AceSetup:
     """[AFC_ACE]: one unit (AFC_ACE ACE_1, ACE_2, ...) per ACE, each with its
     four lanes. `ace: pro|2pro` picks the model, `units: auto` counts the
@@ -3488,6 +3505,7 @@ class AceSetup:
     serial: ...) overrides keys for that unit."""
 
     def __init__(self, config: ConfigWrapper) -> None:
+        global _SETUP_UNIT_COUNT
         self.printer = config.get_printer()
         protocol = config.getchoice("ace", ACE_MODELS, "pro")
         units = config.get("units", "auto").strip().lower()
@@ -3503,26 +3521,31 @@ class AceSetup:
                 raise config.error("[AFC_ACE] units must be auto or a number, not %r" % units)
             if count < 1:
                 raise config.error("[AFC_ACE] units must be at least 1")
+        self.unit_count = count
+        _SETUP_UNIT_COUNT = count
         # Every key here is read by the units; read them once here too, or
         # Klipper's option check rejects them as unused in [AFC_ACE]
         for option in config.fileconfig.options(config.get_name()):
             config.get(option)
         fc = config.fileconfig
-        for number in range(1, count + 1):
-            section = f"AFC_ACE ACE_{number}"
-            if not fc.has_section(section):
-                fc.add_section(section)
-            defaults = [("unit_index", str(number - 1))]
-            # A chained unit unplugged at startup is reported, not a failure
-            if number > 1:
-                defaults.append(("optional", "True"))
-            # [AFC_ACE] serial on an ACE Pro is the first unit's port
-            if number == 1 and protocol == "ace1" and fc.has_option("AFC_ACE", "serial"):
-                defaults.append(("serial", fc.get("AFC_ACE", "serial")))
-            for key, value in defaults:
-                if not fc.has_option(section, key):
-                    fc.set(section, key, value)
-            self.printer.load_object(config, section)
+        try:
+            for number in range(1, count + 1):
+                section = f"AFC_ACE ACE_{number}"
+                if not fc.has_section(section):
+                    fc.add_section(section)
+                defaults = [("unit_index", str(number - 1))]
+                # A chained unit unplugged at startup is reported, not a failure
+                if number > 1:
+                    defaults.append(("optional", "True"))
+                # [AFC_ACE] serial on an ACE Pro is the first unit's port
+                if number == 1 and protocol == "ace1" and fc.has_option("AFC_ACE", "serial"):
+                    defaults.append(("serial", fc.get("AFC_ACE", "serial")))
+                for key, value in defaults:
+                    if not fc.has_option(section, key):
+                        fc.set(section, key, value)
+                self.printer.load_object(config, section)
+        finally:
+            _SETUP_UNIT_COUNT = 1
 
 
 def load_config(config: ConfigWrapper) -> AceSetup:
