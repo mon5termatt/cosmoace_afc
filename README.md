@@ -141,8 +141,8 @@ removed. This is not the CANVAS 4-port toolhead hub.
 Stage to hub / measure bowden (not printing, both sensors clear):
 
 ```gcode
-AFC_ACE_CALIBRATE_HUB UNIT=ACE_1 LANE=lane1
-AFC_ACE_CALIBRATE_PATH UNIT=ACE_1 LANE=lane1
+AFC_ACE_CALIBRATE_HUB LANE=lane1
+AFC_ACE_CALIBRATE_PATH LANE=lane1
 ```
 
 `CALIBRATE_HUB` only homes and parks — keep `dist_hub` as a generous cap.
@@ -172,18 +172,21 @@ All other settings, with their defaults, are listed in [All settings](#all-setti
 AFC's own commands work on the ACE lanes (`T0`, `TOOL_LOAD`, `TOOL_UNLOAD`,
 `SET_COLOR`, ...). This adds:
 
+With **one** ACE, `UNIT=` can be omitted (`AFC_ACE_STATUS`, `AFC_ACE_CALIBRATE_HUB
+LANE=lane1`, …). With two or more, `UNIT=ACE_1` / `ACE_2` is required.
+
 | Command | What it does |
 |---|---|
-| `AFC_ACE_STATUS UNIT=ACE_1` | Print the ACE's raw status. |
-| `AFC_ACE_DRYER_START UNIT=ACE_1 [TEMP=45] [DURATION=240]` | Run the ACE's dryer (°C, minutes). It also shows as a heater in the UI. |
-| `AFC_ACE_DRYER_STOP UNIT=ACE_1` | Stop the dryer. |
-| `AFC_ACE_RESET UNIT=ACE_1 LANE=lane1` | Clear a stuck lane: if the head sensor sees filament it heats, cuts and pulls it out of the gears, then the ACE retracts it and parks it. |
-| `AFC_ACE_STOP UNIT=ACE_1 LANE=lane1` | Stop all ACE motion on a lane. |
+| `AFC_ACE_STATUS` | Print the ACE's raw status. |
+| `AFC_ACE_DRYER_START [TEMP=45] [DURATION=240]` | Run the ACE's dryer (°C, minutes). It also shows as a heater in the UI. |
+| `AFC_ACE_DRYER_STOP` | Stop the dryer. |
+| `AFC_ACE_RESET LANE=lane1` | Clear a stuck lane: if the head sensor sees filament it heats, cuts and pulls it out of the gears, then the ACE retracts it and parks it. |
+| `AFC_ACE_STOP LANE=lane1` | Stop all ACE motion on a lane. |
 | `AFC_ACE_BYPASS ENABLE=1` / `ENABLE=0` | Print from a spool fed straight into the printer, not through the ACE. Also the `AFC_ACE_BYPASS_ON` / `_OFF` macros. |
 | `AFC_ACE_PANEL ACTION=INSTALL` / `REMOVE` | Add or remove the optional ACE Pro panel in Mainsail. |
-| `AFC_ACE_CALIBRATE_HUB UNIT=ACE_1 LANE=lane1` | Feed to hub, retract `CLEAR` (default `hub_clear_mm`). Does not set `dist_hub` (ACE preload is random). `PARK=0` leaves tip at hub. |
-| `AFC_ACE_CALIBRATE_BOWDEN UNIT=ACE_1 LANE=lane1` | Feed hub→toolhead; report `afc_bowden_length` (hybrid only; tip at hub). |
-| `AFC_ACE_CALIBRATE_PATH UNIT=ACE_1 LANE=lane1` | Hub (no park) → bowden → park behind hub (hybrid only). |
+| `AFC_ACE_CALIBRATE_HUB LANE=lane1` | Feed to hub, retract `CLEAR` (default `hub_clear_mm`). Does not set `dist_hub` (ACE preload is random). `PARK=0` leaves tip at hub. |
+| `AFC_ACE_CALIBRATE_BOWDEN LANE=lane1` | Feed hub→toolhead; report `afc_bowden_length` (hybrid only; tip at hub). |
+| `AFC_ACE_CALIBRATE_PATH LANE=lane1` | Hub (no park) → bowden → park behind hub (hybrid only). |
 
 **Bypass:** turning it on unloads the loaded lane and gives the path sensor its
 runout pause back. Feed your spool through the sensor to the extruder, heat
